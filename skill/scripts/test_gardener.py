@@ -93,6 +93,19 @@ class SkillUsageTest(unittest.TestCase):
         self.assertEqual(gardener.skill_usage(conn), {})
         conn.close()
 
+    def test_pruned_text_fallback(self):
+        """PRUNED 文本格式（会话压缩后 content 退化成非 JSON）必须被正则兜底计入。"""
+        conn = make_conn(messages=[
+            {"session_id": "s1", "role": "tool", "tool_name": "skill_view",
+             "content": "[skill_view] name=xlsx (11,235 chars) [SKILL_PRUNED: content lost "
+                        "in compression; reload with skill_view(name='xlsx')]",
+             "timestamp": 100},
+        ])
+        usage = gardener.skill_usage(conn)
+        self.assertEqual(usage["xlsx"]["views"], 1)
+        self.assertEqual(usage["xlsx"]["last"], 100)
+        conn.close()
+
 
 class SedimentTest(unittest.TestCase):
     def test_matches_keyword(self):

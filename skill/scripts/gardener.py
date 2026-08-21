@@ -80,18 +80,28 @@ def check_schema(conn):
 
 
 def skill_usage(conn):
-    """从 skill_view 工具返回里解析「哪个 skill 被加载了几次 + 最后时间」。"""
+    """从 skill_view 工具返回里解析「哪个 skill 被加载了几次 + 最后时间」。
+
+    content 有两种格式：
+    - JSON：{"success": true, "name": "...", ...}
+    - PRUNED 文本：`[skill_view] name=xxx (N chars) [SKILL_PRUNED: ...]`
+      （会话压缩后 content 退化成纯文本，json.loads 会失败——正则兜底，
+        否则压缩过的加载记录被静默漏掉，热点统计慢性失真。）
+    """
     usage = defaultdict(lambda: {"views": 0, "last": None})
     try:
         rows = conn.execute(
             "SELECT content, timestamp FROM messages WHERE tool_name='skill_view' AND role='tool'"
         )
         for content, ts in rows:
+            name = None
             try:
                 d = json.loads(content or "{}")
+                name = d.get("name")
             except Exception:
-                continue
-            name = d.get("name")
+                m = re.search(r"name=([^\s()]+)", content or "")
+                if m:
+                    name = m.group(1)
             if not name:
                 continue
             usage[name]["views"] += 1
@@ -168,12 +178,12 @@ REQUIRED_COLS = {
 
 
 def sediment_candidates(conn, kw_list):
-    """从 user/assistant 消息里找「值得沉淀成 skill」的线索。"""
+    """从 user/assistant 消息里找「值得沉淀成 skill」的线索（最新在前）。"""
     out = []
     try:
         rows = conn.execute(
             "SELECT session_id, role, content, timestamp FROM messages "
-            "WHERE role IN ('user','assistant') AND content IS NOT NULL ORDER BY id"
+            "WHERE role IN ('user','assistant') AND content IS NOT NULL ORDER BY id DESC"
         )
         for sid, role, content, ts in rows:
             c = content or ""
@@ -316,8 +326,11 @@ def build_report(args, sediment_kw=None):
             d = len(disk) - p_count
             add(f"- 技能总数：{p_count} → {len(disk)}（{'新增 %d' % d if d > 0 else '减少 %d' % -d if d < 0 else '无变化'}）")
         if p_sess is not None:
-            d = len(sess) - p_sess
-            add(f"- 会话数：{p_sess} → {len(sess)}（{'+%d' % d if d >= 0 else '%d' % d}）")
+            if sess_ok:
+                d = len(sess) - p_sess
+                add(f"- 会话数：{p_sess} → {len(sess)}（{'+%d' % d if d >= 0 else '%d' % d}）")
+            else:
+                add("- 会话数：跳过（sessions 表缺列，见 schema 自检）")
         moved = []
         for n, u in usage.items():
             pv = 0
@@ -448,12 +461,13 @@ def build_report(args, sediment_kw=None):
             add(f"- `{m['file']}`：不存在")
     add("")
 
-    # 8. 会话概览
-    add("## 8. 会话概览")
+    # 8. 会话概览（最近 N 个，最新在前）
+    recent_sess = sess[-args.top:] if len(sess) > args.top else sess
+    add(f"## 8. 会话概览（最近 {len(recent_sess)} 个）")
     add("")
     add("| 会话 | 标题 | 开始 | 消息 | 工具调用 | 成本(USD) |")
     add("|---|---|---|---|---|---|")
-    for s in sess:
+    for s in reversed(recent_sess):
         cost = f"${s['cost']:.4f}" if s["cost"] is not None else "?"
         add(f"| {s['id']} | {s['title']} | {s['started']} | {s['msgs']} | {s['tools']} | {cost} |")
     add("")
