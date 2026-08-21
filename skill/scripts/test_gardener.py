@@ -13,6 +13,7 @@ import sqlite3
 import unittest
 
 import gardener
+import watchdog
 
 
 def make_conn(messages=None, sessions=None):
@@ -163,6 +164,32 @@ class SessionOverviewTest(unittest.TestCase):
         self.assertEqual(sess[0]["title"], "报价单")
         self.assertEqual(sess[0]["cost"], 0.09)  # actual 优先
         conn.close()
+
+
+class WatchdogModelTargetTest(unittest.TestCase):
+    def test_cron_pin_wins_over_config_default(self):
+        job = {"model": "cron-model", "provider": "cron-provider"}
+        config = ("default-model", "default-provider", "https://relay/v1", "KEY_ENV")
+        self.assertEqual(
+            watchdog._model_check_target(job, config),
+            ("cron-model", "cron-provider", "cron job"),
+        )
+
+    def test_job_provider_falls_back_to_config_provider(self):
+        job = {"model": "cron-model"}
+        config = ("default-model", "default-provider", "https://relay/v1", "KEY_ENV")
+        self.assertEqual(
+            watchdog._model_check_target(job, config),
+            ("cron-model", "default-provider", "cron job"),
+        )
+
+    def test_config_default_is_only_fallback(self):
+        job = {}
+        config = ("default-model", "default-provider", "https://relay/v1", "KEY_ENV")
+        self.assertEqual(
+            watchdog._model_check_target(job, config),
+            ("default-model", "default-provider", "config default"),
+        )
 
 
 class SchemaContractTest(unittest.TestCase):

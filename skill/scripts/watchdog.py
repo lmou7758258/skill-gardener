@@ -121,12 +121,30 @@ def _cron_job_health():
     return job, None
 
 
+def _model_check_target(job, config_values):
+    """选择模型检查目标：cron job 的 pin 优先，config 默认值只作回退。
+
+    返回 (model, provider, source)。source 用于报警时说明是否发生了回退。
+    """
+    config_model, config_provider, _base_url, _key_env = config_values
+    if job and job.get("model"):
+        return job["model"], job.get("provider") or config_provider, "cron job"
+    return config_model, config_provider, "config default"
+
+
 def main():
     problems = []
 
+    # 先定位目标 job。模型检查必须针对该 job 的实际 pin，不能误用全局默认模型。
+    job, err = _cron_job_health()
+    if err:
+        problems.append(f"cron 健康检查失败: {err}")
+
     # ── 检查 1: 模型是否还在中转站清单里（仅 OpenAI 兼容中转站适用）──
-    if not SKIP_MODEL_CHECK:
-        model, provider, base_url, key_env = _read_yaml_simple(CONFIG)
+    if not SKIP_MODEL_CHECK and not err:
+        config_values = _read_yaml_simple(CONFIG)
+        model, provider, model_source = _model_check_target(job, config_values)
+        _config_model, _config_provider, base_url, key_env = config_values
         if base_url and model:
             ok, info = _models_alive(base_url, key_env)
             if not ok:
@@ -134,18 +152,18 @@ def main():
             elif model not in info:
                 provider_hint = provider or "<你的 provider 名>"
                 problems.append(
-                    f"断粮报警: cron 依赖的模型 '{model}' 已不在中转站清单里。"
+                    f"断粮报警: {model_source} 依赖的模型 '{model}' 已不在中转站清单里。"
                     f"现有: {', '.join(info)}。请跑: hermes cron edit <巡检 job> "
                     f"--provider {provider_hint} --model <清单里的模型>"
                 )
         else:
-            problems.append(f"config.yaml 解析不出 model/base_url (got model={model})")
+            problems.append(
+                f"config.yaml 解析不出 base_url 或模型 "
+                f"(model={model}, base_url={base_url})"
+            )
 
     # ── 检查 2: job last_status ──
-    job, err = _cron_job_health()
-    if err:
-        problems.append(f"cron 健康检查失败: {err}")
-    else:
+    if not err:
         status = job.get("last_status")
         if status == "error":
             problems.append(
