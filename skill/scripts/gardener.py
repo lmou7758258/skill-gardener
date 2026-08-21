@@ -11,7 +11,7 @@ skill-gardener — Hermes 技能园艺师。
   * 产出的是「线索与清单」；最终的沉淀/清理动作由 Hermes agent 在会话中确认后执行。
 
 用法：
-  python gardener.py [--home PATH] [--stale-days N] [--top N]
+  python gardener.py [--home PATH] [--stale-days N] [--top N] [--sediment-kw "a,b,c"]
 输出：
   * stdout 打印完整报告（cron no_agent 模式可直接用）
   * 同时写入 $HERMES_HOME/.skill-gardener/report.md
@@ -56,6 +56,27 @@ def read_state_db(db_path):
         return sqlite3.connect("file:" + db_path + "?mode=ro", uri=True)
     except Exception:
         return None
+
+
+def check_schema(conn):
+    """校验 state.db 的必需列。返回 {表名: 缺失列清单}；空 dict = 全部就绪。
+
+    这是 fail-closed 的关键：schema 一旦漂移（Hermes 迁移改名），
+    报告必须显式标红缺失列，而不是让各 reader 静默吞异常出空表。
+    """
+    if conn is None:
+        return {"state.db": ["<文件不存在或不可读>"]}
+    missing = {}
+    for table, cols in REQUIRED_COLS.items():
+        try:
+            have = {r[1] for r in conn.execute("PRAGMA table_info(%s)" % table)}
+        except Exception as e:
+            missing[table] = ["<读取失败: %s>" % e]
+            continue
+        miss = [c for c in cols if c not in have]
+        if miss:
+            missing[table] = miss
+    return missing
 
 
 def skill_usage(conn):
@@ -135,10 +156,18 @@ def find_dupes(skills, threshold=0.62):
     return pairs
 
 
-SEDIMENT_KW = ["记住", "下次", "别忘了", "以后遇到", "存成 skill", "存成skill", "要不要存", "每次都要"]
+SEDIMENT_KW_DEFAULT = ["记住", "下次", "别忘了", "以后遇到", "存成 skill", "存成skill", "要不要存", "每次都要"]
+
+# state.db 里 gardener 依赖的必需列。缺失任一时，对应数据 section 显式报警并跳过，
+# 绝不静默出空表（fail-closed：监测工具不可假装"一切正常"）。
+REQUIRED_COLS = {
+    "messages": ["id", "session_id", "role", "content", "tool_name", "timestamp"],
+    "sessions": ["id", "title", "started_at", "message_count",
+                 "tool_call_count", "estimated_cost_usd", "actual_cost_usd"],
+}
 
 
-def sediment_candidates(conn):
+def sediment_candidates(conn, kw_list):
     """从 user/assistant 消息里找「值得沉淀成 skill」的线索。"""
     out = []
     try:
@@ -148,7 +177,7 @@ def sediment_candidates(conn):
         )
         for sid, role, content, ts in rows:
             c = content or ""
-            hit = next((kw for kw in SEDIMENT_KW if kw in c), None)
+            hit = next((kw for kw in kw_list if kw in c), None)
             if hit:
                 snippet = re.sub(r"\s+", " ", c).strip()[:140]
                 out.append({"session": sid, "role": role, "kw": hit, "ts": ts, "snippet": snippet})
@@ -224,20 +253,25 @@ def save_snapshot(run_dir, snap):
         sys.stderr.write("save_snapshot error: %s\n" % e)
 
 
-def build_report(args):
+def build_report(args, sediment_kw=None):
     H = args.home or detect_home()
     db = os.path.join(H, "state.db")
     skills_root = os.path.join(H, "skills")
     mem_dir = os.path.join(H, "memories")
 
+    sediment_kw = sediment_kw or SEDIMENT_KW_DEFAULT
+
     conn = read_state_db(db)
+    schema_issues = check_schema(conn)
+    msgs_ok = not schema_issues.get("messages")
+    sess_ok = not schema_issues.get("sessions")
     disk = disk_skills(skills_root)
-    usage = skill_usage(conn) if conn else {}
-    changes = skill_changes(conn) if conn else []
+    usage = skill_usage(conn) if msgs_ok else {}
+    changes = skill_changes(conn) if msgs_ok else []
     dupes = find_dupes(disk)
-    cands = sediment_candidates(conn) if conn else []
+    cands = sediment_candidates(conn, sediment_kw) if msgs_ok else []
     mem = memory_overview(mem_dir)
-    sess = session_overview(conn) if conn else []
+    sess = session_overview(conn) if sess_ok else []
     run_dir = os.path.join(H, ".skill-gardener")
     prev = load_snapshot(run_dir)
 
@@ -251,6 +285,22 @@ def build_report(args):
     add(f"技能总数：{len(disk)}（磁盘 SKILL.md） | 会话数：{len(sess)}")
     add("")
     add("---")
+    add("")
+
+    # ⚠️ Schema 自检（fail-closed：缺列必须显式报警，不许静默出空表）
+    add("## ⚠️ Schema 自检")
+    add("")
+    if schema_issues:
+        for table, cols in schema_issues.items():
+            if cols and isinstance(cols[0], str) and cols[0].startswith("<"):
+                add(f"- ❌ `{table}`：{cols[0]}")
+            else:
+                add(f"- ❌ `{table}` 缺列：{', '.join(cols)}")
+        add("")
+        add("> 依赖缺失列的数据 section（§1/§5/§6/§6b/§8）已跳过，本报告**不完整**。")
+        add("> 请核对 Hermes 版本，state.db 结构可能已迁移。")
+    else:
+        add("- ✅ 所有必需列就绪，数据 section 完整。")
     add("")
 
     # 0. 较上次变化（趋势）
@@ -439,8 +489,14 @@ def main():
     ap.add_argument("--home", default=None, help="Hermes home 路径（默认自动探测）")
     ap.add_argument("--stale-days", type=int, default=30, help="长期未用阈值（天）")
     ap.add_argument("--top", type=int, default=15, help="每类最多列出的条数")
+    ap.add_argument("--sediment-kw", default=None,
+                    help="逗号分隔的沉淀关键词，覆盖默认中文表（例：'remember,下次别忘了'）")
     args = ap.parse_args()
-    report, rp = build_report(args)
+    if args.sediment_kw:
+        sediment_kw = [k.strip() for k in args.sediment_kw.split(",") if k.strip()]
+    else:
+        sediment_kw = SEDIMENT_KW_DEFAULT
+    report, rp = build_report(args, sediment_kw)
     print(report)
     sys.stderr.write("\n[report saved] %s\n" % rp)
 

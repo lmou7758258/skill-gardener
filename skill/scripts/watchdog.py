@@ -20,7 +20,9 @@ from pathlib import Path
 HOME = Path(os.environ.get("HERMES_HOME") or (Path.home() / ".hermes"))
 CONFIG = HOME / "config.yaml"
 JOBS = HOME / "cron" / "jobs.json"
-JOB_NAME = "skill-gardener-weekly"  # 巡检 cron job 的 name 字段（cron 定义里的 name）
+# 巡检 cron job 的 name（cron 定义里的 name）。可用环境变量 SKILL_GARDENER_JOB_NAME 覆盖，
+# 避免硬编码耦合到某个具体 job 名。
+JOB_NAME = os.environ.get("SKILL_GARDENER_JOB_NAME", "skill-gardener-weekly")
 MAX_STALE_DAYS = 8  # 周任务 + 1 天容差
 
 STALE_FILE = HOME / ".skill-gardener" / "watchdog_state.json"

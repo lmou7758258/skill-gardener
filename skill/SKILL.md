@@ -30,7 +30,7 @@ metadata:
 4. 双轨分流：稳定偏好 → memory，可复用流程 → skill，别混。
 
 ## 步骤
-1. 跑报告：`python scripts/gardener.py`（自动探测 HERMES_HOME；可用 `--home`、`--stale-days`、`--top` 覆盖）
+1. 跑报告：`python scripts/gardener.py`（自动探测 HERMES_HOME；可用 `--home`、`--stale-days`、`--top`、`--sediment-kw "a,b,c"` 覆盖；`--sediment-kw` 用于给非中文会话换一套沉淀关键词）
 2. 读 `$HERMES_HOME/.skill-gardener/report.md`（脚本同时写文件 + 打 stdout）
 3. 按报告「行动建议」逐项判断，结论列给用户确认。
 4. 用户确认后再动手。
@@ -39,6 +39,7 @@ metadata:
 `scripts/watchdog.py` 每天 9:55 由 cron 直跑（无 LLM 消耗）：
 - 检查中转站 `/v1/models` 是否还有 cron 依赖的模型（防 404 断粮）
 - 检查巡检 job `last_status=error` / 上次运行超 8 天（防跳周静默）
+- 巡检 job 名默认 `skill-gardener-weekly`，可用环境变量 `SKILL_GARDENER_JOB_NAME` 覆盖（改名后别忘同步）
 - 一切正常 → 零输出（SILENT）；异常 → stdout 打报警（存 watchdog cron 输出目录，状态落盘 `.skill-gardener/watchdog_state.json`）
 - 会话中若用户说巡检没跑/模型 404，先看 `watchdog_state.json` 和该目录最新输出。
 
@@ -93,4 +94,5 @@ created_at: <ISO>
 - §3 是字符串相似，会误报「同族但刻意分开」的技能；只删确属冗余的。
 - §6 很多「记住」类信号已被 memory 接住，别重复存成 skill。
 - 数据只有几天时，§2 别急着归档。
+- 报告顶部有「⚠️ Schema 自检」区块：显示 ❌ 缺列 = Hermes 升级改了 state.db 结构，对应数据 section 已被跳过，报告不可信（别把空表当「一切正常」）。
 - Windows 用 `python`（3.11 venv，纯标准库，无第三方依赖）。
