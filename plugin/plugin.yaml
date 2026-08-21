@@ -1,0 +1,5 @@
+name: skill-gardener-reminder
+version: 1.0.0
+description: Inject skill-gardener PENDING.md reminders into the current turn via pre_llm_call.
+author: Hermes Agent
+license: MIT
