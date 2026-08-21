@@ -8,6 +8,7 @@
 或  python -m unittest test_gardener
 """
 import json
+import os
 import sqlite3
 import unittest
 
@@ -149,6 +150,50 @@ class SessionOverviewTest(unittest.TestCase):
         self.assertEqual(sess[0]["title"], "报价单")
         self.assertEqual(sess[0]["cost"], 0.09)  # actual 优先
         conn.close()
+
+
+class SchemaContractTest(unittest.TestCase):
+    """契约测试：把 gardener.REQUIRED_COLS 钉在「真实 state.db」的 schema 快照上。
+
+    两层校验：
+    - fixture 契约（任何环境可跑）：REQUIRED_COLS 声明的列不能超出快照里的真实列。
+    - live 校验（本机有真实 state.db 时）：当前 db 仍包含 REQUIRED_COLS 所需列，
+      Hermes 升级删列/改列名能当场抓住，而不是等周报静默出空表。
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        here = os.path.dirname(os.path.abspath(__file__))
+        with open(os.path.join(here, "schema_fixture.json"), encoding="utf-8") as f:
+            cls.fixture = json.load(f)
+
+    def test_required_cols_within_fixture(self):
+        for table, cols in gardener.REQUIRED_COLS.items():
+            self.assertIn(table, self.fixture, f"fixture 缺表 {table}")
+            for c in cols:
+                self.assertIn(
+                    c, self.fixture[table],
+                    f"REQUIRED_COLS 声明了 {table}.{c}，但真实 schema 快照里没有它",
+                )
+
+    def test_against_live_db(self):
+        """本机有真实 state.db 时 live 校验；CI/无 db 环境自动 skip。"""
+        H = gardener.detect_home()
+        db = os.path.join(H, "state.db")
+        if not os.path.isfile(db):
+            self.skipTest("本机无 state.db，跳过 live 校验")
+        conn = sqlite3.connect("file:" + db + "?mode=ro", uri=True)
+        live = {}
+        for t in ("messages", "sessions"):
+            live[t] = {r[1] for r in conn.execute("PRAGMA table_info(%s)" % t)}
+        conn.close()
+        for table, cols in gardener.REQUIRED_COLS.items():
+            missing = [c for c in cols if c not in live.get(table, set())]
+            self.assertFalse(
+                missing,
+                f"真实 state.db 的 {table} 缺列 {missing} —— Hermes 可能已迁移，"
+                f"gardener 的 REQUIRED_COLS 需同步更新",
+            )
 
 
 if __name__ == "__main__":

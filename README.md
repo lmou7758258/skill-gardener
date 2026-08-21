@@ -8,8 +8,8 @@ Automated health audits for your [Hermes Agent](https://hermes-agent.nousresearc
 
 | Component | Role |
 |---|---|
-| `skill/scripts/gardener.py` | Scans `state.db` + `skills/` + `memories/`, emits a health report (§0 trends, §1 hot skills, §2 stale, §3 suspected duplicates, §4 never-loaded, §5 edit history, §6 deposit candidates, §6b hard-task sessions, §7 memory overview, §8 session overview). |
-| `skill/scripts/watchdog.py` | Daily `no_agent` cron script: checks (a) the relay still serves the pinned model, (b) the weekly job's `last_status`, (c) staleness. Silent when healthy, prints an alert when not. |
+| `skill/scripts/gardener.py` | Scans `state.db` + `skills/` + `memories/`, emits a health report (§0–§8) plus a **fail-closed schema self-check** — missing/renamed columns are flagged explicitly instead of silently producing empty sections. Configurable via `--home` `--stale-days` `--top` `--sediment-kw`. |
+| `skill/scripts/watchdog.py` | Daily `no_agent` cron script: checks (a) the relay still serves the pinned model, (b) the weekly job's `last_status`, (c) staleness. Silent when healthy, prints an alert when not. Target job name configurable via `SKILL_GARDENER_JOB_NAME`. |
 | `skill/scripts/cron-backstop.ps1` | Windows Scheduled Task shim that fires due cron jobs even when the desktop app is closed (the desktop backend's cron ticker dies with the app). |
 | `plugin/` (`skill-gardener-reminder`) | A `pre_llm_call` plugin that injects a reminder into your next turn when there's an unhandled `PENDING.md`. |
 
@@ -67,3 +67,7 @@ schtasks /create /tn "HermesCronBackstop" \
 - Pure standard library (Python 3.11+); no third-party deps.
 - The `.ps1` shim deliberately uses ASCII comments so Windows PowerShell 5.1 (ANSI codepage) parses it correctly without BOM/encoding pitfalls.
 - `gardener.py` and `watchdog.py` locate `HERMES_HOME` via env var → `~/.hermes` → `%LOCALAPPDATA%\hermes` → `%APPDATA%\hermes`, so they work on Windows, macOS, and Linux.
+- **Fail-closed schema check**: `gardener.py` verifies the `state.db` columns it needs before querying. If a future Hermes migration renames a column, the report flags it up top instead of emitting empty sections — a watchdog that never fakes "all good".
+- **Configurable, not hardcoded**: sediment keywords via `--sediment-kw "remember,next time"` (default list is Chinese — English-language sessions should override it); watchdog target job via `SKILL_GARDENER_JOB_NAME` (default `skill-gardener-weekly`).
+- **Tests**: `python skill/scripts/test_gardener.py` (stdlib `unittest`, no deps). `schema_fixture.json` snapshots the verified real `state.db` column names; a contract test pins `REQUIRED_COLS` to it, and a live check runs against your actual `state.db` when present.
+- **Watchdog assumptions**: `watchdog.py` expects an OpenAI-compatible relay exposing `GET /v1/models`, and a `config.yaml` whose `model:` block uses 2-space indentation (`default:` / `provider:` / `base_url:` / `key_env:`). A different layout will surface as "can't parse model/base_url" — that's the parser's assumption, not a relay outage.
