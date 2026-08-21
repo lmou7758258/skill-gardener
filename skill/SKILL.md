@@ -39,6 +39,7 @@ metadata:
 `scripts/watchdog.py` 每天 9:55 由 cron 直跑（无 LLM 消耗）：
 - 检查中转站 `/v1/models` 是否还有 cron 依赖的模型（防 404 断粮）
 - 检查巡检 job `last_status=error` / 上次运行超 8 天（防跳周静默）
+- **模型检查的前提**：断粮检查假设你用的是 OpenAI 兼容中转站（暴露 `GET /v1/models`，且 cron 依赖的模型在该清单里）。若用大模型供应商官方 API（OpenAI/Anthropic/Gemini/xAI）或自建非标准 gateway，此项会误报「不可达/断粮」——设环境变量 `SKILL_GARDENER_SKIP_MODEL_CHECK=1` 可跳过它，job 健康与超期检查照常。
 - 巡检 job 名默认 `skill-gardener-weekly`，可用环境变量 `SKILL_GARDENER_JOB_NAME` 覆盖（改名后别忘同步）
 - 一切正常 → 零输出（SILENT）；异常 → stdout 打报警（存 watchdog cron 输出目录，状态落盘 `.skill-gardener/watchdog_state.json`）
 - 会话中若用户说巡检没跑/模型 404，先看 `watchdog_state.json` 和该目录最新输出。

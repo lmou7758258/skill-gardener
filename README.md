@@ -48,6 +48,8 @@ Create a cron job at `0 10 * * 6` that loads the `skill-gardener` skill. Pin a `
 ### 4. Watchdog cron (daily)
 A `no_agent` cron job at `55 9 * * *` running `skill/scripts/watchdog.py`. It emits empty output when healthy, an alert line when not.
 
+> **The model check assumes an OpenAI-compatible relay.** The "model famine" check calls `GET /v1/models` and expects the model your cron job relies on to be in that list. If you use a **first-party model provider** (OpenAI, Anthropic, Gemini, xAI, …) or a **custom/self-hosted gateway** that doesn't serve a standard `/v1/models`, this check will false-alarm ("unreachable" / "model missing"). Set `SKILL_GARDENER_SKIP_MODEL_CHECK=1` to disable just that check — the job-health and staleness checks still run regardless.
+
 ### 5. Windows backstop (desktop only, optional)
 ```
 schtasks /create /tn "HermesCronBackstop" \

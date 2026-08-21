@@ -17,13 +17,39 @@ import urllib.request
 from datetime import datetime, timedelta
 from pathlib import Path
 
-HOME = Path(os.environ.get("HERMES_HOME") or (Path.home() / ".hermes"))
+def _detect_home():
+    """HERMES_HOME 四级回退（与 gardener.py / README 承诺一致）。
+
+    仅试 `~/.hermes` 不够——Windows 上 Hermes 常装到 %LOCALAPPDATA%\\hermes，
+    漏掉这两级会让 watchdog 读错 HOME，报一堆假警（config 解析失败 / jobs.json 读不到）。
+    """
+    cands = []
+    if os.environ.get("HERMES_HOME"):
+        cands.append(os.environ["HERMES_HOME"])
+    cands += [
+        str(Path.home() / ".hermes"),
+        os.path.join(os.environ.get("LOCALAPPDATA", ""), "hermes"),
+        os.path.join(os.environ.get("APPDATA", ""), "hermes"),
+    ]
+    for c in cands:
+        if c and (Path(c) / "config.yaml").is_file():
+            return c
+    return cands[0] if cands else str(Path.home() / ".hermes")
+
+
+HOME = Path(_detect_home())
 CONFIG = HOME / "config.yaml"
 JOBS = HOME / "cron" / "jobs.json"
 # 巡检 cron job 的 name（cron 定义里的 name）。可用环境变量 SKILL_GARDENER_JOB_NAME 覆盖，
 # 避免硬编码耦合到某个具体 job 名。
 JOB_NAME = os.environ.get("SKILL_GARDENER_JOB_NAME", "skill-gardener-weekly")
 MAX_STALE_DAYS = 8  # 周任务 + 1 天容差
+
+# 断粮检查（检查 1）只适用于 OpenAI 兼容中转站（暴露 GET /v1/models）。
+# 用官方大模型供应商 API（OpenAI/Anthropic/Gemini/xAI 等）或自建非标准 gateway 时，
+# 该检查会误报「不可达/断粮」——设 SKILL_GARDENER_SKIP_MODEL_CHECK=1 可跳过它，
+# 检查 2（job 健康）与检查 3（超期）不受影响。
+SKIP_MODEL_CHECK = os.environ.get("SKILL_GARDENER_SKIP_MODEL_CHECK", "") not in ("", "0", "false", "False")
 
 STALE_FILE = HOME / ".skill-gardener" / "watchdog_state.json"
 
@@ -98,21 +124,22 @@ def _cron_job_health():
 def main():
     problems = []
 
-    # ── 检查 1: 模型是否还在中转站清单里 ──
-    model, provider, base_url, key_env = _read_yaml_simple(CONFIG)
-    if base_url and model:
-        ok, info = _models_alive(base_url, key_env)
-        if not ok:
-            problems.append(f"中转站 /v1/models 不可达: {info}")
-        elif model not in info:
-            provider_hint = provider or "<你的 provider 名>"
-            problems.append(
-                f"断粮报警: cron 依赖的模型 '{model}' 已不在中转站清单里。"
-                f"现有: {', '.join(info)}。请跑: hermes cron edit <巡检 job> "
-                f"--provider {provider_hint} --model <清单里的模型>"
-            )
-    else:
-        problems.append(f"config.yaml 解析不出 model/base_url (got model={model})")
+    # ── 检查 1: 模型是否还在中转站清单里（仅 OpenAI 兼容中转站适用）──
+    if not SKIP_MODEL_CHECK:
+        model, provider, base_url, key_env = _read_yaml_simple(CONFIG)
+        if base_url and model:
+            ok, info = _models_alive(base_url, key_env)
+            if not ok:
+                problems.append(f"中转站 /v1/models 不可达: {info}")
+            elif model not in info:
+                provider_hint = provider or "<你的 provider 名>"
+                problems.append(
+                    f"断粮报警: cron 依赖的模型 '{model}' 已不在中转站清单里。"
+                    f"现有: {', '.join(info)}。请跑: hermes cron edit <巡检 job> "
+                    f"--provider {provider_hint} --model <清单里的模型>"
+                )
+        else:
+            problems.append(f"config.yaml 解析不出 model/base_url (got model={model})")
 
     # ── 检查 2: job last_status ──
     job, err = _cron_job_health()
